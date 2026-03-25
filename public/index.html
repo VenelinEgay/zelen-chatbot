@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ЗЕЛЕН — AI Асистент</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --green: #6ab04c;
+      --green-dark: #4a8c34;
+      --green-light: #e8f5e1;
+      --bg: #f5f7f0;
+      --white: #ffffff;
+      --text: #2d3436;
+      --text-light: #636e72;
+      --border: #dfe6e9;
+      --shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    .header {
+      background: var(--white);
+      border-bottom: 2px solid var(--green);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: var(--shadow);
+    }
+    .header-logo {
+      width: 48px;
+      height: 48px;
+      background: var(--green);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+    .header-text h1 {
+      font-size: 18px;
+      color: var(--green-dark);
+    }
+    .header-text p {
+      font-size: 12px;
+      color: var(--text-light);
+    }
+
+    /* Chat Area */
+    .chat-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .message {
+      max-width: 85%;
+      padding: 12px 16px;
+      border-radius: 16px;
+      line-height: 1.5;
+      font-size: 14px;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.bot {
+      background: var(--white);
+      border: 1px solid var(--border);
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    }
+
+    .message.user {
+      background: var(--green);
+      color: white;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.bot a {
+      color: var(--green-dark);
+      text-decoration: underline;
+    }
+
+    .message.bot strong {
+      color: var(--green-dark);
+    }
+
+    /* Typing indicator */
+    .typing {
+      display: flex;
+      gap: 4px;
+      padding: 16px;
+      align-self: flex-start;
+    }
+    .typing span {
+      width: 8px;
+      height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: bounce 1.4s infinite both;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    /* Quick Actions */
+    .quick-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 20px;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto 8px;
+    }
+    .quick-btn {
+      padding: 8px 14px;
+      border: 1px solid var(--green);
+      border-radius: 20px;
+      background: var(--white);
+      color: var(--green-dark);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .quick-btn:hover {
+      background: var(--green);
+      color: white;
+    }
+
+    /* Input Area */
+    .input-area {
+      background: var(--white);
+      border-top: 1px solid var(--border);
+      padding: 16px 20px;
+      display: flex;
+      gap: 12px;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .input-area input {
+      flex: 1;
+      padding: 12px 16px;
+      border: 2px solid var(--border);
+      border-radius: 24px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-area input:focus {
+      border-color: var(--green);
+    }
+    .input-area button {
+      padding: 12px 24px;
+      background: var(--green);
+      color: white;
+      border: none;
+      border-radius: 24px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 0.2s;
+      font-weight: 600;
+    }
+    .input-area button:hover {
+      background: var(--green-dark);
+    }
+    .input-area button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Welcome */
+    .welcome {
+      text-align: center;
+      padding: 40px 20px;
+    }
+    .welcome-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+    }
+    .welcome h2 {
+      font-size: 22px;
+      color: var(--green-dark);
+      margin-bottom: 8px;
+    }
+    .welcome p {
+      color: var(--text-light);
+      font-size: 14px;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+
+    /* Markdown-like rendering */
+    .message.bot p { margin: 8px 0; }
+    .message.bot p:first-child { margin-top: 0; }
+    .message.bot p:last-child { margin-bottom: 0; }
+
+    /* Mobile */
+    @media (max-width: 600px) {
+      .message { max-width: 92%; font-size: 14px; }
+      .header { padding: 10px 16px; }
+      .input-area { padding: 12px 16px; }
+      .input-area button { padding: 12px 16px; }
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 8px;
+      font-size: 11px;
+      color: var(--text-light);
+      background: var(--white);
+      border-top: 1px solid var(--border);
+    }
+    .footer a { color: var(--green-dark); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-logo">🌿</div>
+    <div class="header-text">
+      <h1>ЗЕЛЕН — AI Асистент</h1>
+      <p>Помагам ти да намериш правилните био продукти</p>
+    </div>
+  </div>
+
+  <div class="chat-container" id="chatContainer">
+    <div class="welcome">
+      <div class="welcome-icon">🌿</div>
+      <h2>Здравей! Аз съм твоят ЗЕЛЕН асистент</h2>
+      <p>Помагам ти да намериш био продукти спрямо твоите нужди — ниски калории, висок протеин, без глутен и още. Питай ме!</p>
+    </div>
+  </div>
+
+  <div class="quick-actions" id="quickActions">
+    <button class="quick-btn" onclick="sendQuick('Искам нещо с малко калории')">🥗 Ниски калории</button>
+    <button class="quick-btn" onclick="sendQuick('Искам нещо с висок протеин')">💪 Висок протеин</button>
+    <button class="quick-btn" onclick="sendQuick('Какво имате без глутен?')">🌾 Без глутен</button>
+    <button class="quick-btn" onclick="sendQuick('Какво бихте препоръчали за имунитет?')">🛡️ Имунитет</button>
+    <button class="quick-btn" onclick="sendQuick('Имате ли веган продукти?')">🌱 Веган</button>
+    <button class="quick-btn" onclick="sendQuick('Какво имате за кето диета?')">🥑 Кето</button>
+  </div>
+
+  <div class="input-area">
+    <input type="text" id="messageInput" placeholder="Напиши съобщение..." autocomplete="off" />
+    <button id="sendBtn" onclick="sendMessage()">Изпрати</button>
+  </div>
+
+  <div class="footer">
+    Powered by <a href="https://zelen.bg" target="_blank">zelen.bg</a> | 📞 0879368774
+  </div>
+
+  <script>
+    const API_URL = window.location.origin + '/api/chat';
+    const chatContainer = document.getElementById('chatContainer');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const quickActions = document.getElementById('quickActions');
+
+    let sessionId = 'session_' + Math.random().toString(36).substring(2, 15);
+    let isFirstMessage = true;
+
+    messageInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    function sendQuick(text) {
+      messageInput.value = text;
+      sendMessage();
+    }
+
+    function formatMessage(text) {
+      // Convert markdown-style formatting to HTML
+      let html = text
+        // Bold
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        // Links [text](url)
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+        // Line breaks
+        .replace(/\n/g, '<br>')
+        // Bullet points
+        .replace(/^- (.+)/gm, '• $1');
+      return html;
+    }
+
+    function addMessage(text, type) {
+      if (isFirstMessage) {
+        const welcome = chatContainer.querySelector('.welcome');
+        if (welcome) welcome.remove();
+        isFirstMessage = false;
+        quickActions.style.display = 'none';
+      }
+
+      const div = document.createElement('div');
+      div.className = `message ${type}`;
+      div.innerHTML = type === 'bot' ? formatMessage(text) : text;
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function showTyping() {
+      const div = document.createElement('div');
+      div.className = 'typing';
+      div.id = 'typingIndicator';
+      div.innerHTML = '<span></span><span></span><span></span>';
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function hideTyping() {
+      const el = document.getElementById('typingIndicator');
+      if (el) el.remove();
+    }
+
+    async function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) return;
+
+      addMessage(text, 'user');
+      messageInput.value = '';
+      sendBtn.disabled = true;
+      showTyping();
+
+      try {
+        const res = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, sessionId })
+        });
+
+        const data = await res.json();
+        hideTyping();
+        addMessage(data.reply || data.error || 'Грешка при обработка.', 'bot');
+      } catch (err) {
+        hideTyping();
+        addMessage('Грешка при връзката със сървъра. Моля, опитайте по-късно или се свържете с нас на 0879368774.', 'bot');
+      }
+
+      sendBtn.disabled = false;
+      messageInput.focus();
+    }
+  </script>
+</body>
+</html>
