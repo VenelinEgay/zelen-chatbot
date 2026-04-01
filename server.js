@@ -31,18 +31,150 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── Helpers ────────────────────────────────────────────────────
+
+// ── Auto-tagging ──────────────────────────────────────────────
+const TAG_RULES = [
+  { tag: 'vegan',        patterns: [/vegan/i, /plant[\s-]?based/i] },
+  { tag: 'gluten-free',  patterns: [/gluten[\s-]?free/i, /без глутен/i, /bezlepkov/i] },
+  { tag: 'bio',          patterns: [/\bbio\b/i, /\borganic\b/i] },
+  { tag: 'protein',      patterns: [/protein/i, /протеин/i] },
+  { tag: 'keto',         patterns: [/\bketo\b/i] },
+  { tag: 'raw',          patterns: [/\braw\b/i] },
+  { tag: 'no-added-sugar', patterns: [/no added sugar/i, /sugar[\s-]?free/i] },
+  { tag: 'snack',        patterns: [/snack/i, /bar\b/i, /wafer/i, /cookie/i, /crisp/i, /chip/i] },
+  { tag: 'chocolate',    patterns: [/chocolat/i, /cocoa/i, /cacao/i] },
+  { tag: 'nut-butter',   patterns: [/nut[\s-]?butter/i, /peanut[\s-]?butter/i, /almond[\s-]?butter/i, /cashew[\s-]?butter/i] },
+  { tag: 'spread',       patterns: [/spread/i, /tahini/i] },
+  { tag: 'superfood',    patterns: [/superfood/i, /adaptogen/i, /maca/i, /ashwagandha/i, /spirulina/i, /chlorella/i, /moringa/i] },
+  { tag: 'immunity',     patterns: [/immun/i, /vitamin[\s-]?[cd]/i] },
+  { tag: 'energy',       patterns: [/energy/i, /energi/i, /stamina/i] },
+  { tag: 'drink',        patterns: [/drink/i, /milk/i, /smoothie/i, /shake/i] },
+  { tag: 'cooking',      patterns: [/cook/i, /bak/i, /flour/i, /mix\b/i] },
+  { tag: 'nuts-seeds',   patterns: [/\bnut\b/i, /\bnuts\b/i, /seed/i, /almond/i, /cashew/i, /walnut/i, /peanut/i, /hazelnut/i, /pistachio/i] },
+  { tag: 'coconut',      patterns: [/coconut/i, /coco\b/i] },
+  { tag: 'fruit',        patterns: [/fruit/i, /berry/i, /mango/i, /banana/i, /apple/i, /strawberry/i, /raspberry/i, /blueberry/i] },
+  { tag: 'granola',      patterns: [/granola/i, /muesli/i, /oat/i] },
+  { tag: 'gift',         patterns: [/gift/i, /bundle/i, /box/i, /calendar/i, /christmas/i] },
+];
+
+function autoTag(product) {
+  const text = `${product.name} ${product.description} ${product.productType} ${(product.shopifyTags || []).join(' ')}`;
+  const tags = new Set();
+  for (const st of (product.shopifyTags || [])) {
+    if (/vegan/i.test(st)) tags.add('vegan');
+    if (/gluten[\s-]?free/i.test(st)) tags.add('gluten-free');
+    if (/\bbio\b/i.test(st) || /organic/i.test(st)) tags.add('bio');
+    if (/no[\s-]?added[\s-]?sugar/i.test(st)) tags.add('no-added-sugar');
+    if (/\bketo\b/i.test(st)) tags.add('keto');
+    if (/\braw\b/i.test(st)) tags.add('raw');
+    if (/immun/i.test(st)) tags.add('immunity');
+  }
+  for (const rule of TAG_RULES) {
+    if (!tags.has(rule.tag)) {
+      for (const p of rule.patterns) {
+        if (p.test(text)) { tags.add(rule.tag); break; }
+      }
+    }
+  }
+  const pt = (product.productType || '').toLowerCase();
+  if (pt.includes('bar') || pt.includes('snack') || pt.includes('cookie')) tags.add('snack');
+  if (pt.includes('protein')) tags.add('protein');
+  if (pt.includes('superfood')) tags.add('superfood');
+  if (pt.includes('nut butter')) tags.add('nut-butter');
+  if (pt.includes('spread')) tags.add('spread');
+  if (pt.includes('drink')) tags.add('drink');
+  if (pt.includes('chocolate')) tags.add('chocolate');
+  if (pt.includes('cooking') || pt.includes('soup')) tags.add('cooking');
+  if (pt.includes('granola')) tags.add('granola');
+  if (pt.includes('nuts')) tags.add('nuts-seeds');
+  if (pt.includes('bundle') || pt.includes('advent')) tags.add('gift');
+  return [...tags];
+}
+
+// ── Fetch URL Helper ──────────────────────────────────────────
+function fetchUrl(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : require('http');
+    mod.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return fetchUrl(res.headers.location).then(resolve, reject);
+      }
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
 // ── Load Products ──────────────────────────────────────────────
 let PRODUCTS = [];
-function loadProducts() {
+const SHOPIFY_DOMAIN = 'https://bettr-food.com';
+
+async function fetchShopifyProducts() {
+  const allProducts = [];
+  let page = 1;
+  while (true) {
+    const url = `${SHOPIFY_DOMAIN}/products.json?limit=250&page=${page}`;
+    console.log(`Fetching ${url}`);
+    const raw = await fetchUrl(url);
+    const data = JSON.parse(raw);
+    if (!data.products || data.products.length === 0) break;
+    for (const p of data.products) {
+      const variants = (p.variants || []).filter(v => parseFloat(v.price) > 0).map(v => ({
+        title: v.title, price: parseFloat(v.price), available: v.available, weight: v.weight ? String(v.weight) : ''
+      }));
+      if (variants.length === 0) continue;
+      const availableVariants = variants.filter(v => v.available);
+      const priceSource = availableVariants.length > 0 ? availableVariants : variants;
+      const priceEUR = Math.min(...priceSource.map(v => v.price));
+      const shopifyTags = (p.tags || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+      const description = (p.body_html || '').replace(/<[^>]*>/g, '').substring(0, 500);
+      const product = {
+        name: p.title,
+        url: `${SHOPIFY_DOMAIN}/products/${p.handle}`,
+        vendor: p.vendor || '',
+        productType: p.product_type || '',
+        description,
+        shopifyTags,
+        priceEUR,
+        isAvailable: availableVariants.length > 0,
+        variants: variants.map(v => ({ title: v.title, price: v.price, available: v.available })),
+        imageUrl: (p.images && p.images[0]) ? p.images[0].src : ''
+      };
+      product.tags = autoTag(product);
+      delete product.shopifyTags;
+      allProducts.push(product);
+    }
+    page++;
+    if (page > 10) break; // Safety limit
+  }
+  return allProducts;
+}
+
+async function loadProducts() {
+  // Try fetching from Shopify JSON API first
+  try {
+    console.log('Fetching products from Shopify JSON API...');
+    const products = await fetchShopifyProducts();
+    if (products.length > 0) {
+      PRODUCTS = products;
+      console.log(`Loaded ${PRODUCTS.length} products from Shopify API`);
+      return;
+    }
+  } catch (e) {
+    console.log(`Shopify API fetch failed: ${e.message}`);
+  }
+
+  // Fallback: load from products.json
   try {
     const p = path.join(__dirname, 'products.json');
     PRODUCTS = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    console.log(`Loaded ${PRODUCTS.length} products`);
+    console.log(`Loaded ${PRODUCTS.length} products from products.json (fallback)`);
   } catch (e) {
-    console.error('Failed to load products:', e.message);
+    console.error('Failed to load products from any source:', e.message);
   }
 }
-loadProducts();
 
 // ── Language Definitions ───────────────────────────────────────
 const LANGUAGES = {
@@ -71,7 +203,7 @@ function getSystemPrompt(lang) {
     sl: 'Odgovarjaj IZKLJUČNO v slovenskem jeziku.',
   };
 
-  return `You are Bett'r Bot \u2014 a friendly, knowledgeable AI assistant for Bett'r Food (bettr-food.com), an online store for premium organic, vegan, and plant-based foods across Europe.
+  return `You are Bett'r Bot — a friendly, knowledgeable AI assistant for Bett'r Food (bettr-food.com), an online store for premium organic, vegan, and plant-based foods across Europe.
 
 ${langInstruction[lang] || langInstruction.en}
 
@@ -82,7 +214,7 @@ YOUR ROLE:
 - Use markdown for formatting: **bold** for product names, bullet lists for multiple items
 
 PRODUCT RECOMMENDATIONS:
-- When suggesting products, always include: name, price (\u20ac), and a direct link
+- When suggesting products, always include: name, price (€), and a direct link
 - Format product links as: [Product Name](URL)
 - Show max 3-5 products per response unless asked for more
 - If a product has multiple variants, mention the options
@@ -93,7 +225,7 @@ IMPORTANT RULES:
 - If you don't have a product that matches, say so honestly
 - Never invent products or prices
 - For shipping/payment/returns questions, direct to bettr-food.com/pages/faqs
-- Prices are in EUR (\u20ac)
+- Prices are in EUR (€)
 - The store ships to: Bulgaria, Croatia, Czech Republic, Greece, Hungary, Romania, Slovakia, Slovenia, and internationally
 
 PRODUCT CATALOG will be provided in each message as context.`;
@@ -195,8 +327,8 @@ function callGemini(messages, systemPrompt) {
 
     const productContext = relevant.length > 0
       ? '\n\nRELEVANT PRODUCTS FROM CATALOG:\n' + relevant.map(p => {
-          const variants = p.variants.map(v => `${v.title}: \u20ac${v.price} (${v.available ? 'in stock' : 'out of stock'})`).join('; ');
-          return `- **${p.name}** | \u20ac${p.priceEUR} | ${p.vendor} | ${p.productType} | Tags: ${p.tags.join(', ')} | Variants: ${variants} | ${p.isAvailable ? 'Available' : 'Out of stock'} | URL: ${p.url} | Image: ${p.imageUrl}`;
+          const variants = p.variants.map(v => `${v.title}: €${v.price} (${v.available ? 'in stock' : 'out of stock'})`).join('; ');
+          return `- **${p.name}** | €${p.priceEUR} | ${p.vendor} | ${p.productType} | Tags: ${p.tags.join(', ')} | Variants: ${variants} | ${p.isAvailable ? 'Available' : 'Out of stock'} | URL: ${p.url} | Image: ${p.imageUrl}`;
         }).join('\n')
       : '\n\nNo specific products matched the query. You can suggest browsing the catalog at bettr-food.com';
 
@@ -356,8 +488,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ── Start Server ───────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`Bett'r Food Chatbot running on port ${PORT}`);
-  console.log(`Products loaded: ${PRODUCTS.length}`);
-  console.log(`Languages: ${Object.keys(LANGUAGES).join(', ')}`);
+loadProducts().then(() => {
+  app.listen(PORT, () => {
+    console.log(`Bett'r Food Chatbot running on port ${PORT}`);
+    console.log(`Products loaded: ${PRODUCTS.length}`);
+    console.log(`Languages: ${Object.keys(LANGUAGES).join(', ')}`);
+  });
+}).catch(err => {
+  console.error('Startup error:', err);
+  // Start server anyway with empty products
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} (with ${PRODUCTS.length} products)`);
+  });
 });
