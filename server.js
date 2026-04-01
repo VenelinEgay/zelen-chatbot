@@ -1,188 +1,236 @@
 /**
- * Zelen.bg AI Chatbot Server
- * Provides product recommendations and customer support using Google Gemini AI
+ * Bett'r Food AI Chatbot Server
+ * Multi-language product recommendation chatbot powered by Gemini 2.5 Flash
+ * Supports: EN, BG, HR, CS, EL, HU, RO, SK, SL
  */
 
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- Middleware ---
-app.use(express.json());
+// ── CORS ───────────────────────────────────────────────────────
+const ALLOWED_ORIGINS = [
+  process.env.WEBSITE_DOMAIN || 'https://bettr-food.com',
+  'https://www.bettr-food.com',
+  'http://localhost:3000',
+  'http://localhost:8080',
+];
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests from zelen.bg, localhost, and no origin (server-to-server)
-    const allowed = [
-      process.env.WEBSITE_DOMAIN || 'https://zelen.bg',
-      'https://zelen.bg',
-      'http://zelen.bg',
-      'https://www.zelen.bg',
-      'http://www.zelen.bg',
-      'http://localhost:3000',
-      'http://127.0.0.1:3000'
-    ];
-    if (!origin || allowed.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all origins for widget embedding
-    }
-  }
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.some(o => origin.startsWith(o))) cb(null, true);
+    else cb(null, true); // Allow all during development
+  },
+  credentials: true
 }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Load Product Database ---
-let products = [];
-
+// ── Load Products ──────────────────────────────────────────────
+let PRODUCTS = [];
 function loadProducts() {
-  const productsPath = path.join(__dirname, 'products.json');
-  if (fs.existsSync(productsPath)) {
-    products = JSON.parse(fs.readFileSync(productsPath, 'utf8'));
-    console.log(`â Loaded ${products.length} products`);
-  } else {
-    console.warn('â ï¸  products.json not found! Please provide the product feed.');
+  try {
+    const p = path.join(__dirname, 'products.json');
+    PRODUCTS = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    console.log(`Loaded ${PRODUCTS.length} products`);
+  } catch (e) {
+    console.error('Failed to load products:', e.message);
   }
 }
+loadProducts();
 
-// --- Product Search Engine ---
-function searchProducts(query, maxResults = 5) {
+// ── Language Definitions ───────────────────────────────────────
+const LANGUAGES = {
+  en: { name: 'English', flag: '🌐', greeting: 'Hi! I\'m your Bett\'r Food assistant. How can I help you today?' },
+  bg: { name: 'Български', flag: '🇧🇬', greeting: 'Здравейте! Аз съм вашият Bett\'r Food асистент. Как мога да ви помогна?' },
+  hr: { name: 'Hrvatski', flag: '🇭🇷', greeting: 'Bok! Ja sam vaš Bett\'r Food asistent. Kako vam mogu pomoći?' },
+  cs: { name: 'Čeština', flag: '🇨🇿', greeting: 'Ahoj! Jsem váš Bett\'r Food asistent. Jak vám mohu pomoci?' },
+  el: { name: 'Ελληνικά', flag: '🇬🇷', greeting: 'Γεια σας! Είμαι ο βοηθός σας στο Bett\'r Food. Πώς μπορώ να σας βοηθήσω;' },
+  hu: { name: 'Magyar', flag: '🇭🇺', greeting: 'Szia! A Bett\'r Food asszisztensed vagyok. Miben segíthetek?' },
+  ro: { name: 'Română', flag: '🇷🇴', greeting: 'Bună! Sunt asistentul tău Bett\'r Food. Cum te pot ajuta?' },
+  sk: { name: 'Slovenčina', flag: '🇸🇰', greeting: 'Ahoj! Som váš Bett\'r Food asistent. Ako vám môžem pomôcť?' },
+  sl: { name: 'Slovenščina', flag: '🇸🇮', greeting: 'Živjo! Sem vaš Bett\'r Food pomočnik. Kako vam lahko pomagam?' },
+};
+
+// ── System Prompts by Language ─────────────────────────────────
+function getSystemPrompt(lang) {
+  const langInstruction = {
+    en: 'Respond ONLY in English.',
+    bg: 'Отговаряй САМО на български език.',
+    hr: 'Odgovaraj ISKLJUČIVO na hrvatskom jeziku.',
+    cs: 'Odpovídej POUZE v českém jazyce.',
+    el: 'Απάντησε ΜΟΝΟ στα ελληνικά.',
+    hu: 'Válaszolj KIZÁRÓLAG magyar nyelven.',
+    ro: 'Răspunde DOAR în limba română.',
+    sk: 'Odpovedaj VÝLUČNE v slovenskom jazyku.',
+    sl: 'Odgovarjaj IZKLJUČNO v slovenskem jeziku.',
+  };
+
+  return `You are Bett'r Bot \u2014 a friendly, knowledgeable AI assistant for Bett'r Food (bettr-food.com), an online store for premium organic, vegan, and plant-based foods across Europe.
+
+${langInstruction[lang] || langInstruction.en}
+
+YOUR ROLE:
+- Help customers find products, answer questions about ingredients, nutrition, dietary needs
+- Recommend products based on preferences (vegan, gluten-free, keto, protein, etc.)
+- Be warm, enthusiastic about healthy food, and helpful
+- Use markdown for formatting: **bold** for product names, bullet lists for multiple items
+
+PRODUCT RECOMMENDATIONS:
+- When suggesting products, always include: name, price (\u20ac), and a direct link
+- Format product links as: [Product Name](URL)
+- Show max 3-5 products per response unless asked for more
+- If a product has multiple variants, mention the options
+- Always check isAvailable before recommending
+
+IMPORTANT RULES:
+- Only recommend products from the catalog provided in the context
+- If you don't have a product that matches, say so honestly
+- Never invent products or prices
+- For shipping/payment/returns questions, direct to bettr-food.com/pages/faqs
+- Prices are in EUR (\u20ac)
+- The store ships to: Bulgaria, Croatia, Czech Republic, Greece, Hungary, Romania, Slovakia, Slovenia, and internationally
+
+PRODUCT CATALOG will be provided in each message as context.`;
+}
+
+// ── Product Search Engine ──────────────────────────────────────
+const TAG_BOOST = {
+  'vegan': ['vegan', 'plant-based', 'растителен', 'vegán', 'veganski'],
+  'gluten-free': ['gluten-free', 'gluten free', 'celiac', 'безглутен', 'bezlepkov', 'gluténmentes', 'brez glutena'],
+  'protein': ['protein', 'протеин', 'fehérje', 'bílkovina', 'proteína'],
+  'keto': ['keto', 'low-carb', 'low carb', 'ketó'],
+  'chocolate': ['chocolate', 'chocolat', 'шоколад', 'čokoláda', 'σοκολάτα', 'csokoládé', 'ciocolată'],
+  'nut-butter': ['nut butter', 'peanut butter', 'almond butter', 'cashew butter', 'tahini', 'масло'],
+  'snack': ['snack', 'bar', 'cookie', 'wafer', 'десерт', 'снакс'],
+  'superfood': ['superfood', 'spirulina', 'maca', 'ashwagandha', 'chlorella', 'moringa'],
+  'no-added-sugar': ['no sugar', 'sugar-free', 'no added sugar', 'без захар', 'bez cukru', 'cukormentes'],
+  'coconut': ['coconut', 'кокос', 'kokos', 'kókusz', 'nucă de cocos'],
+  'fruit': ['fruit', 'berry', 'mango', 'banana', 'плод', 'ovoce', 'gyümölcs', 'fruct'],
+  'spread': ['spread', 'pasta', 'crema', 'намаз'],
+  'drink': ['drink', 'milk', 'напитка', 'nápoj', 'ital', 'băutură'],
+  'granola': ['granola', 'muesli', 'oat', 'гранола', 'müsli'],
+  'immunity': ['immunity', 'immune', 'vitamin', 'имунитет', 'imunita', 'immunitás'],
+  'energy': ['energy', 'енергия', 'energia', 'energie'],
+  'cooking': ['cooking', 'baking', 'flour', 'mix', 'готвене', 'pečení', 'sütés'],
+  'raw': ['raw', 'сурово'],
+  'bio': ['bio', 'organic', 'био', 'organický', 'βιολογικό'],
+  'gift': ['gift', 'bundle', 'box', 'подарък', 'dárek', 'ajándék', 'cadou'],
+};
+
+function searchProducts(query, limit = 10) {
+  if (!query || !PRODUCTS.length) return [];
   const q = query.toLowerCase();
-  const words = q.split(/\s+/).filter(w => w.length >= 2);
+  const words = q.split(/\s+/).filter(w => w.length > 1);
 
-  const scored = products.map((p) => {
+  const scored = PRODUCTS.map(product => {
     let score = 0;
-    const name = (p.name || '').toLowerCase();
-    const desc = (p.description || '').toLowerCase();
-    const tags = (p.tags || []).join(' ');
+    const name = product.name.toLowerCase();
+    const desc = (product.description || '').toLowerCase();
+    const type = (product.productType || '').toLowerCase();
+    const vendor = (product.vendor || '').toLowerCase();
 
-    // Direct name match (highest weight)
-    if (name.includes(q)) score += 15;
+    // Name match (highest weight)
+    for (const w of words) {
+      if (name.includes(w)) score += 15;
+    }
+    if (name.includes(q)) score += 25;
 
-    // Word-level matching
-    words.forEach(word => {
-      if (name.includes(word)) score += 5;
-      if (desc.includes(word)) score += 2;
-      if (tags.includes(word)) score += 4;
-    });
+    // Vendor match
+    for (const w of words) {
+      if (vendor.includes(w)) score += 8;
+    }
 
-    // Dietary/health queries with tag matching
-    const tagBoosts = [
-      { queries: ['Ð²ÐµÐ³Ð°Ð½', 'vegan', 'ÑÐ°ÑÑÐ¸ÑÐµÐ»Ð½'], tag: 'vegan', boost: 8 },
-      { queries: ['Ð±ÐµÐ· Ð³Ð»ÑÑÐµÐ½', 'gluten', 'Ð±ÐµÐ·Ð³Ð»ÑÑÐµÐ½Ð¾Ð²', 'ÑÐµÐ»Ð¸Ð°ÐºÐ¸Ñ'], tag: 'gluten-free', boost: 8 },
-      { queries: ['Ð±ÐµÐ· Ð·Ð°ÑÐ°Ñ', 'sugar', 'Ð´Ð¸Ð°Ð±ÐµÑ'], tag: 'no-added-sugar', boost: 8 },
-      { queries: ['ÐºÐµÑÐ¾', 'keto', 'Ð½Ð¸ÑÐºÐ¾Ð²ÑÐ³Ð»ÐµÑÐ¸Ð´ÑÐ°ÑÐ½'], tag: 'keto', boost: 8 },
-      { queries: ['Ð¿ÑÐ¾ÑÐµÐ¸Ð½', 'protein', 'Ð±ÐµÐ»ÑÑÐº', 'Ð¼ÑÑÐºÑÐ»'], tag: 'protein', boost: 8 },
-      { queries: ['ÑÐ¸Ð±ÑÐ¸', 'fiber', 'Ð²Ð»Ð°ÐºÐ½Ð¸Ð½', 'ÑÑÐ°Ð½Ð¾ÑÐ¼Ð¸Ð»Ð°Ð½Ðµ'], tag: 'fiber', boost: 8 },
-      { queries: ['Ð¸Ð¼ÑÐ½Ð¸ÑÐµÑ', 'immun', 'Ð½Ð°ÑÑÐ¸Ð½ÐºÐ°', 'Ð³ÑÐ¸Ð¿'], tag: 'immunity', boost: 8 },
-      { queries: ['ÐºÐ¾Ð·Ð¼ÐµÑÐ¸Ðº', 'ÐºÐ¾Ð¶Ð°', 'ÐºÐ¾ÑÐ°', 'ÐºÑÐµÐ¼', 'ÑÐ°Ð¼Ð¿Ð¾Ð°Ð½', 'Ð»Ð¾ÑÐ¸Ð¾Ð½'], tag: 'cosmetic', boost: 8 },
-      { queries: ['Ð±ÐµÐ±Ðµ', 'Ð±ÐµÐ±ÐµÑ', 'Ð´ÐµÑÑÐº', 'baby', 'Ð´ÐµÑÐµ'], tag: 'baby', boost: 8 },
-      { queries: ['ÑÐ½Ð°ÐºÑ', 'Ð·Ð°ÐºÑÑÐºÐ°', 'Ð±Ð°ÑÑÐµ', 'Ð´ÐµÑÐµÑÑ', 'ÑÐ»Ð°Ð´ÐºÐ¾', 'Ð±Ð¾Ð½Ð±Ð¾Ð½', 'ÑÐ¾ÐºÐ¾Ð»Ð°Ð´'], tag: 'snack', boost: 6 },
-      { queries: ['Ð½Ð°Ð¿Ð¸ÑÐº', 'ÑÐ¾Ðº', 'ÑÐ¼ÑÑÐ¸', 'ÑÐ°Ð¹', 'ÐºÐ°ÑÐµ', 'Ð¿Ð¸Ñ'], tag: 'drink', boost: 6 },
-      { queries: ['Ð¿Ð¾ÑÐ¸ÑÑÐ²Ð°Ð½Ðµ', 'Ð¿ÑÐ°Ð½Ðµ', 'Ð¼Ð¸ÐµÐ½Ðµ', 'Ð´ÑÐ¾Ð³ÐµÑÐ¸Ñ'], tag: 'cleaning', boost: 8 },
-      { queries: ['Ð´ÐµÑÐ¾ÐºÑ', 'detox', 'Ð¿ÑÐµÑÐ¸ÑÑÐ²Ð°Ð½Ðµ'], tag: 'detox', boost: 8 },
-      { queries: ['ÐµÐ½ÐµÑÐ³Ð¸Ñ', 'energy', 'ÑÐ¼Ð¾ÑÐ°', 'ÑÐ¾Ð½ÑÑ'], tag: 'energy', boost: 6 },
-      { queries: ['Ð¾ÑÑÐ»Ð°Ð±Ð²Ð°Ð½Ðµ', 'Ð´Ð¸ÐµÑÐ°', 'ÐºÐ°Ð»Ð¾ÑÐ¸Ð¸', 'Ð¾ÑÑÐ»Ð°Ð±Ð½Ð°'], tag: 'weight-loss', boost: 6 },
-      { queries: ['ÑÐ¿Ð¾ÑÑ', 'ÑÐ¸ÑÐ½ÐµÑ', 'ÑÑÐµÐ½Ð¸ÑÐ¾Ð²ÐºÐ°', 'gym'], tag: 'fitness', boost: 6 },
-      { queries: ['Ð°Ð½ÑÐ¸Ð¾ÐºÑÐ¸Ð´Ð°Ð½Ñ', 'antioxidant'], tag: 'antioxidant', boost: 6 },
-      { queries: ['ÑÑÐ¿ÐµÑÑÑÐ°Ð½', 'superfood'], tag: 'superfood', boost: 6 },
-      { queries: ['ÑÐµÐ¼Ðµ', 'ÑÐ´Ðº', 'nuts', 'seeds', 'Ð±Ð°Ð´ÐµÐ¼', 'Ð»ÐµÑÐ½Ð¸Ðº', 'ÐºÐ°ÑÑ', 'Ð¾ÑÐµÑ'], tag: 'nuts-seeds', boost: 6 },
-      { queries: ['Ð¼Ð°ÑÐ»Ð¾', 'oil', 'Ð·ÐµÑÑÐ¸Ð½', 'ÐºÐ¾ÐºÐ¾ÑÐ¾Ð²Ð¾'], tag: 'oil', boost: 4 },
-      { queries: ['Ð±ÑÐ°ÑÐ½Ð¾', 'Ð¼Ð¸ÐºÑ Ð·Ð°', 'Ð¿ÐµÑÐµÐ½Ðµ', 'baking'], tag: 'baking', boost: 6 },
-      { queries: ['Ð¿Ð¾Ð´Ð¿ÑÐ°Ð²Ðº', 'spice', 'ÐºÑÑÐºÑÐ¼Ð°', 'ÐºÐ°Ð½ÐµÐ»Ð°', 'Ð´Ð¶Ð¸Ð½Ð´Ð¶Ð¸ÑÐ¸Ð»'], tag: 'spice', boost: 6 },
-      { queries: ['Ð¿Ð°ÑÑÐ°', 'Ð¼Ð°ÐºÐ°ÑÐ¾Ð½', 'ÑÐ¿Ð°Ð³ÐµÑÐ¸', 'ÑÐµÑÑÐµÐ½Ð¸'], tag: 'pasta', boost: 6 },
-      { queries: ['ÐºÑÐµÐ¼ Ð·Ð° Ð¼Ð°Ð·Ð°Ð½Ðµ', 'ÑÐ°ÑÐ°Ð½', 'Ð¼Ð°ÑÐ»Ð¾ Ð¾Ñ'], tag: 'spread', boost: 6 },
-      { queries: ['ÑÐ¿Ð°ÑÐ¸ ÑÑÐ°Ð½Ð°', 'Ð¿ÑÐ¾Ð¼Ð¾ÑÐ¸Ñ', 'Ð½Ð°Ð¼Ð°Ð»ÐµÐ½Ð¸Ðµ'], tag: 'save-food', boost: 4 },
-    ];
+    // Product type match
+    for (const w of words) {
+      if (type.includes(w)) score += 10;
+    }
 
-    tagBoosts.forEach(({ queries, tag, boost }) => {
-      if (queries.some(kw => q.includes(kw))) {
-        if (p.tags?.includes(tag)) score += boost;
-      }
-    });
+    // Description match
+    for (const w of words) {
+      if (desc.includes(w)) score += 3;
+    }
 
-    // Nutritional-based scoring
-    if (q.includes('ÐºÐ°Ð»Ð¾ÑÐ¸Ð¸') || q.includes('calori') || q.includes('Ð½Ð¸ÑÐºÐ¾ÐºÐ°Ð»Ð¾ÑÐ¸Ñ') || q.includes('Ð»ÐµÐºÐ¸')) {
-      const kcal = p.nutrition?.kcal;
-      if (kcal !== undefined) {
-        if (kcal <= 100) score += 10;
-        else if (kcal <= 200) score += 6;
-        else if (kcal <= 300) score += 3;
+    // Tag-based boost (multi-language)
+    for (const [tag, keywords] of Object.entries(TAG_BOOST)) {
+      const tagMatch = keywords.some(kw => q.includes(kw));
+      if (tagMatch && product.tags.includes(tag)) {
+        score += 20;
       }
     }
 
-    if (q.includes('Ð¿ÑÐ¾ÑÐµÐ¸Ð½') || q.includes('protein')) {
-      const prot = p.nutrition?.protein;
-      if (prot !== undefined) {
-        score += Math.min(prot / 3, 8);
-      }
+    // Direct tag match
+    for (const w of words) {
+      if (product.tags.includes(w)) score += 12;
     }
 
-    // Prefer available products
-    if (p.isAvailable) score += 0.5;
+    // Availability bonus
+    if (product.isAvailable) score += 2;
 
-    return { product: p, score };
+    return { product, score };
   });
 
   return scored
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults)
+    .slice(0, limit)
     .map(s => s.product);
 }
 
-function getProductRecommendationContext(query) {
-  const results = searchProducts(query, 8);
-  if (results.length === 0) return 'ÐÐµ Ð±ÑÑÐ° Ð½Ð°Ð¼ÐµÑÐµÐ½Ð¸ Ð¿Ð¾Ð´ÑÐ¾Ð´ÑÑÐ¸ Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸.';
-
-  return results.map(p => {
-    let info = `ð ${p.name}\n`;
-    info += `   Ð¦ÐµÐ½Ð°: ${p.priceBGN} Ð»Ð².${p.priceEUR ? ' / ' + p.priceEUR + ' â¬' : ''}\n`;
-    if (p.tags?.length) info += `   ÐÑÐ¸ÐºÐµÑÐ¸: ${p.tags.join(', ')}\n`;
-    if (p.nutrition && Object.keys(p.nutrition).length > 0) {
-      info += `   Ð¥ÑÐ°Ð½Ð¸ÑÐµÐ»Ð½Ð¸ ÑÑÐ¾Ð¹Ð½Ð¾ÑÑÐ¸: ${JSON.stringify(p.nutrition)}\n`;
-    }
-    if (p.description) info += `   ÐÐ¿Ð¸ÑÐ°Ð½Ð¸Ðµ: ${p.description.substring(0, 250)}\n`;
-    info += `   ÐÐ¸Ð½Ðº: ${p.url}\n`;
-    return info;
-  }).join('\n');
-}
-
-// --- Gemini AI Chat ---
-function callGemini(systemPrompt, messages) {
+// ── Gemini AI Call ─────────────────────────────────────────────
+function callGemini(messages, systemPrompt) {
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) return reject(new Error('GEMINI_API_KEY not configured'));
+    if (!apiKey) return reject(new Error('GEMINI_API_KEY not set'));
 
-    // Convert chat messages to Gemini format
+    // Build context with top products
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    const query = lastUserMsg ? lastUserMsg.content : '';
+    const relevant = searchProducts(query, 15);
+
+    const productContext = relevant.length > 0
+      ? '\n\nRELEVANT PRODUCTS FROM CATALOG:\n' + relevant.map(p => {
+          const variants = p.variants.map(v => `${v.title}: \u20ac${v.price} (${v.available ? 'in stock' : 'out of stock'})`).join('; ');
+          return `- **${p.name}** | \u20ac${p.priceEUR} | ${p.vendor} | ${p.productType} | Tags: ${p.tags.join(', ')} | Variants: ${variants} | ${p.isAvailable ? 'Available' : 'Out of stock'} | URL: ${p.url} | Image: ${p.imageUrl}`;
+        }).join('\n')
+      : '\n\nNo specific products matched the query. You can suggest browsing the catalog at bettr-food.com';
+
     const geminiMessages = messages.map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }]
     }));
 
+    // Inject system prompt + product context into first user message
+    if (geminiMessages.length > 0 && geminiMessages[0].role === 'user') {
+      geminiMessages[0].parts[0].text = systemPrompt + productContext + '\n\nUser message: ' + geminiMessages[0].parts[0].text;
+    }
+
     const body = JSON.stringify({
-      system_instruction: {
-        parts: [{ text: systemPrompt }]
-      },
       contents: geminiMessages,
       generationConfig: {
-        maxOutputTokens: 1024,
         temperature: 0.7,
-      }
+        topP: 0.9,
+        topK: 40,
+        maxOutputTokens: 1024,
+      },
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ]
     });
 
     const options = {
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
+      headers: { 'Content-Type': 'application/json' }
     };
 
     const req = https.request(options, (res) => {
@@ -191,12 +239,13 @@ function callGemini(systemPrompt, messages) {
       res.on('end', () => {
         try {
           const json = JSON.parse(data);
-          if (json.error) {
-            reject(new Error(json.error.message || 'Gemini API error'));
-          } else if (json.candidates && json.candidates[0]?.content?.parts?.[0]?.text) {
-            resolve(json.candidates[0].content.parts[0].text);
+          if (json.candidates && json.candidates[0]) {
+            const text = json.candidates[0].content?.parts?.[0]?.text || '';
+            resolve(text);
+          } else if (json.error) {
+            reject(new Error(json.error.message));
           } else {
-            reject(new Error('Unexpected Gemini response format'));
+            reject(new Error('Unexpected Gemini response'));
           }
         } catch (e) {
           reject(new Error('Failed to parse Gemini response'));
@@ -205,97 +254,110 @@ function callGemini(systemPrompt, messages) {
     });
 
     req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('API timeout')); });
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Gemini timeout')); });
     req.write(body);
     req.end();
   });
 }
 
-const SYSTEM_PROMPT = `Ð¢Ð¸ ÑÐ¸ Ð¿ÑÐ¸ÑÑÐµÐ»ÑÐºÐ¸ Ð¸ Ð¿Ð¾Ð»ÐµÐ·ÐµÐ½ AI Ð°ÑÐ¸ÑÑÐµÐ½Ñ Ð½Ð° Ð¾Ð½Ð»Ð°Ð¹Ð½ Ð¼Ð°Ð³Ð°Ð·Ð¸Ð½ ÐÐÐÐÐ (zelen.bg) â Ð±ÑÐ»Ð³Ð°ÑÑÐºÐ¸ Ð¼Ð°Ð³Ð°Ð·Ð¸Ð½ Ð·Ð° Ð±Ð¸Ð¾ ÑÑÐ°Ð½Ð¸, ÑÑÐ¿ÐµÑÑÑÐ°Ð½Ð¸, Ð´Ð¾Ð±Ð°Ð²ÐºÐ¸, Ð½Ð°Ð¿Ð¸ÑÐºÐ¸ Ð¸ Ð±Ð¸Ð¾ ÐºÐ¾Ð·Ð¼ÐµÑÐ¸ÐºÐ°.
+// ── Session Management ─────────────────────────────────────────
+const sessions = new Map();
+const SESSION_TTL = 30 * 60 * 1000; // 30 min
 
-Ð¢ÐÐÐ¯Ð¢Ð Ð ÐÐÐ¯:
-- ÐÐ¾Ð¼Ð°Ð³Ð°Ð¹ Ð½Ð° ÐºÐ»Ð¸ÐµÐ½ÑÐ¸ÑÐµ Ð´Ð° Ð½Ð°Ð¼ÐµÑÑÑ Ð¿Ð¾Ð´ÑÐ¾Ð´ÑÑÐ¸ Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸ ÑÐ¿ÑÑÐ¼Ð¾ ÑÐµÑÐ½Ð¸ÑÐµ Ð½ÑÐ¶Ð´Ð¸
-- ÐÐ°Ð²Ð°Ð¹ Ð¿ÑÐµÐ¿Ð¾ÑÑÐºÐ¸ Ð²ÑÐ· Ð¾ÑÐ½Ð¾Ð²Ð° Ð½Ð° ÑÑÐ°Ð½Ð¸ÑÐµÐ»Ð½Ð¸ ÑÑÐ¾Ð¹Ð½Ð¾ÑÑÐ¸, Ð´Ð¸ÐµÑÐ¸ÑÐ½Ð¸ Ð¿ÑÐµÐ´Ð¿Ð¾ÑÐ¸ÑÐ°Ð½Ð¸Ñ Ð¸ Ð·Ð´ÑÐ°Ð²Ð¾ÑÐ»Ð¾Ð²Ð½Ð¸ ÑÐµÐ»Ð¸
-- ÐÑÐ³Ð¾Ð²Ð°ÑÑÐ¹ Ð½Ð° Ð²ÑÐ¿ÑÐ¾ÑÐ¸ Ð·Ð° Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸ÑÐµ, Ð´Ð¾ÑÑÐ°Ð²ÐºÐ°ÑÐ° Ð¸ Ð¼Ð°Ð³Ð°Ð·Ð¸Ð½Ð°
-- ÐÑÐ´Ð¸ ÑÐ¾Ð¿ÑÐ», Ð¿ÑÐ¸ÑÑÐµÐ»ÑÐºÐ¸ Ð½Ð°ÑÑÑÐ¾ÐµÐ½ Ð¸ ÐµÐºÑÐ¿ÐµÑÑÐµÐ½
+function getSession(id) {
+  if (!sessions.has(id)) {
+    sessions.set(id, { messages: [], lang: 'en', created: Date.now(), lastActive: Date.now() });
+  }
+  const s = sessions.get(id);
+  s.lastActive = Date.now();
+  return s;
+}
 
-ÐÐÐÐÐ ÐÐ ÐÐÐÐÐ:
-1. ÐÐ¾Ð³Ð°ÑÐ¾ Ð¿ÑÐµÐ¿Ð¾ÑÑÑÐ²Ð°Ñ Ð¿ÑÐ¾Ð´ÑÐºÑ, ÐÐÐÐÐÐ Ð²ÐºÐ»ÑÑÐ²Ð°Ð¹ Ð»Ð¸Ð½Ðº ÐºÑÐ¼ Ð½ÐµÐ³Ð¾
-2. ÐÐ¾Ð³Ð°ÑÐ¾ ÐºÐ»Ð¸ÐµÐ½ÑÑÑ Ð¿Ð¸ÑÐ° Ð·Ð° Ð½Ð¸ÑÐºÐ¾ÐºÐ°Ð»Ð¾ÑÐ¸ÑÐ½Ð¸/Ð²Ð¸ÑÐ¾ÐºÐ¾Ð¿ÑÐ¾ÑÐµÐ¸Ð½Ð¾Ð²Ð¸/Ð±ÐµÐ·Ð³Ð»ÑÑÐµÐ½Ð¾Ð²Ð¸ Ð¸ Ñ.Ð½. Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸, Ð¸Ð·Ð¿Ð¾Ð»Ð·Ð²Ð°Ð¹ Ð´Ð°Ð½Ð½Ð¸ÑÐµ Ð¾Ñ ÑÑÐ°Ð½Ð¸ÑÐµÐ»Ð½Ð¸ÑÐµ ÑÑÐ¾Ð¹Ð½Ð¾ÑÑÐ¸ Ð·Ð° Ð¿ÑÐµÑÐ¸Ð·Ð½Ð¸ Ð¿ÑÐµÐ¿Ð¾ÑÑÐºÐ¸
-3. ÐÑÐ³Ð¾Ð²Ð°ÑÑÐ¹ Ð½Ð° ÐµÐ·Ð¸ÐºÐ° Ð½Ð° ÐºÐ»Ð¸ÐµÐ½ÑÐ° â Ð°ÐºÐ¾ Ð¿Ð¸ÑÐµ Ð½Ð° Ð±ÑÐ»Ð³Ð°ÑÑÐºÐ¸, Ð¾ÑÐ³Ð¾Ð²Ð°ÑÑÐ¹ Ð½Ð° Ð±ÑÐ»Ð³Ð°ÑÑÐºÐ¸; Ð°ÐºÐ¾ Ð½Ð° Ð°Ð½Ð³Ð»Ð¸Ð¹ÑÐºÐ¸ â Ð½Ð° Ð°Ð½Ð³Ð»Ð¸Ð¹ÑÐºÐ¸
-4. ÐÐºÐ¾ Ð½Ðµ Ð·Ð½Ð°ÐµÑ Ð¾ÑÐ³Ð¾Ð²Ð¾ÑÐ° Ð½Ð° Ð½ÐµÑÐ¾ ÑÐ¿ÐµÑÐ¸ÑÐ¸ÑÐ½Ð¾ Ð·Ð° Ð¼Ð°Ð³Ð°Ð·Ð¸Ð½Ð° (Ð´Ð¾ÑÑÐ°Ð²ÐºÐ°, Ð¿Ð¾Ð»Ð¸ÑÐ¸ÐºÐ° Ð·Ð° Ð²ÑÑÑÐ°Ð½Ðµ Ð¸ Ñ.Ð½.), Ð½Ð°ÑÐ¾ÑÐ¸ ÐºÐ»Ð¸ÐµÐ½ÑÐ° ÐºÑÐ¼ ÐºÐ¾Ð½ÑÐ°ÐºÑ: ÑÐµÐ»ÐµÑÐ¾Ð½ 0879368774
-5. ÐÐ Ð¸Ð·Ð¼Ð¸ÑÐ»ÑÐ¹ Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸ â Ð¿ÑÐµÐ¿Ð¾ÑÑÑÐ²Ð°Ð¹ Ð¡ÐÐÐ Ð¿ÑÐ¾Ð´ÑÐºÑÐ¸ Ð¾Ñ Ð¿ÑÐµÐ´Ð¾ÑÑÐ°Ð²ÐµÐ½Ð¸ÑÐµ Ð´Ð°Ð½Ð½Ð¸
-6. ÐÑÐ´Ð¸ ÐºÑÐ°ÑÑÐº Ð½Ð¾ Ð¿Ð¾Ð»ÐµÐ·ÐµÐ½ â Ð½Ðµ Ð´Ð°Ð²Ð°Ð¹ ÑÑÐµÐ½Ð¸ Ð¾Ñ ÑÐµÐºÑÑ
-7. ÐÐ¾Ð¶ÐµÑ4-4,4/ô`4-t-4.ô/´-´.4b4-4/ËM4/ô`4/´-4`ô.´`´,4/t,4,´-t-4/tb´-4/´`t,´-t/H4,4.´/4.´.ô.4-t/t`´b´`4/t-H4/ô/´.4`t.´,4/ô/´,´-taô-B´&4't)4'´(4'4$4)´&4+È4%ô$4'4$4$ô$4%ô&4't$H4(ô-t,t`t,4.t`[[ÂH4(´-t.ô-ta4/´/NÎLÍÍÍH4'ô`4-t-4.ô,4,ô,4`4,t.4/4at`4,4/t.4`t`ô/ô-t`4at`4,4/t.4.4-4/´,t,4,´.´.4/t,4/ô.4`´.´.4,t.4/4.´/´-ô/4-t`´.4.´,4.4-4`4/´,ô-t`4.4cÂH4&4/4,4`4a4.4-ô.4aô-t`t.´.4/4,4,ô,4-ô.4/t.4,4$tb´.ô,ô,4`4.4cÂH4&´,4`´,4.ô/´,Î4/t,4-4/ô`4/´-4`ô.´`´,´)4'´(4'4$4(4't$4'´(´$ô'´$´'´(´&´/´,ô,4`´/4/ô`4-t/ô/´`4b´aô,´,4b4/ô`4/´-4`ô.´`´.4.4-ô/ô/´.ô-ô,´,4.H4`´/´-ô.4a4/´`4/4,4`´&4/4-H4/t,4/ô`4/´-4`ô.´`´,
-8 %4.´`4,4`´.´/4/´/ô.4`t,4/t.4-H4-ô,4bt/4-H4/ô/´-4at/´-4côbB´)´-t/t,4.ô,ô$´.4-4/ô`4/´-4`ô.´`´,J4.ô.4/t.XÂËÈÝÜHÛÛ\Ø][Û\ÝÜH\Ù\ÜÚ[ÛÛÛÝÙ\ÜÚ[ÛÈH]ÈX\
+// Cleanup expired sessions
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of sessions) {
+    if (now - s.lastActive > SESSION_TTL) sessions.delete(id);
+  }
+}, 5 * 60 * 1000);
 
-NÂÛÛÝÑTÔÒSÓÕSQSÕUHÌ
-
-LÈËÈÌZ[]\Â[Ý[ÛÙ]Ù\ÜÚ[ÛÙ\ÜÚ[ÛY
-HÂY
-\Ù\ÜÚ[ÛË\ÊÙ\ÜÚ[ÛY
-JHÂÙ\ÜÚ[ÛËÙ]
-Ù\ÜÚ[ÛYÂY\ÜØYÙ\Î×KÜX]Y]]KÝÊ
-K\ÝXÝ]]N]KÝÊ
-BJNÂBÛÛÝÙ\ÜÚ[ÛHÙ\ÜÚ[ÛËÙ]
-Ù\ÜÚ[ÛY
-NÂÙ\ÜÚ[Û\ÝXÝ]]HH]KÝÊ
-NÂ]\Ù\ÜÚ[ÛÂBËÈÛX[\ÛÙ\ÜÚ[ÛÈ\[ÙXØ[BÙ][\[
+// ── API Routes ─────────────────────────────────────────────────
 
+// Chat endpoint
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, sessionId, lang } = req.body;
+    if (!message) return res.status(400).json({ error: 'Message required' });
 
-HOÂÛÛÝÝÈH]KÝÊ
-NÂÜ
-ÛÛÝÚYÙ\ÜÚ[ÛHÙÙ\ÜÚ[ÛÊHÂY
-ÝÈHÙ\ÜÚ[Û\ÝXÝ]]HÑTÔÒSÓÕSQSÕU
-HÂÙ\ÜÚ[ÛË[]JY
-NÂBBKH
-
-L
-NÂËÈKKHTHÝ]\ÈKKBËÈÚ][Ú[\ÜÝ
-	ËØ\KØÚ]	Ë\Þ[È
-\K\ÊHOÂHÂÛÛÝÈY\ÜØYÙKÙ\ÜÚ[ÛYH	ÙY][	ÈHH\KÙNÂY
-[Y\ÜØYÙH\[ÙY\ÜØYÙHOOH	ÜÝ[ÉÊHÂ]\\ËÝ]\Ê
-KÛÛÈ\Ü	ÓY\ÜØYÙH\È\]Z\Y	ÈJNÂBY
-\ØÙ\ÜË[ÑSRSWÐTWÒÑVJHÂ]\\ËÝ]\ÊL
-KÛÛÂ\Ü	ÐTHÙ^HÝÛÛYÝ\Y	Ë\N	ô)ô,4`´,t/´`´b´`4/t-H4-H4.´/´/ta4.4,ô`ô`4.4`4,4/H4/ô`4,4,´.4.ô/t/4'4/´.ôcË4`t,´b´`4-´-t`´-H4`t-H4`H4/t,4`H4/t,ÎLÍÍÍÂJNÂBÛÛÝÙ\ÜÚ[ÛHÙ]Ù\ÜÚ[ÛÙ\ÜÚ[ÛY
-NÂËÈÙX\ÚÜ[][ÙXÝÈ\ÙYÛHY\ÜØYÙBÛÛÝÙXÝÛÛ^HÙ]ÙXÝXÛÛ[Y[][ÛÛÛ^
-Y\ÜØYÙJNÂËÈZ[H\Ù\Y\ÜØYÙHÚ]ÙXÝÛÛ^ÛÛÝ[[ÙYY\ÜØYÙHHÙXÝÛÛ^	ÙXÝÛÛ^OOH	ô't-H4,tcôat,4/t,4/4-t`4-t/t.4/ô/´-4at/´-4côbt.4/ô`4/´-4`ô.´`´.ÂÈ4&´.ô.4-t/t`´`t.´/4-ô,4/ô.4`´,´,4/t-NÛY\ÜØYÙ_H´'t,4/4-t`4-t/t.4/ô/´-4at/´-4côbt.4/ô`4/´-4`ô.´`´.4/´`4.´,4`´,4.ô/´,ô,ÜÙXÝÛÛ^W´&4-ô/ô/´.ô-ô,´,4.H4,ô/´`4/t.4`´-H4-4,4/t/t.4-ô,4/ô`4/´-4`ô.´`´.4`´-K4-ô,4-4,4/´`´,ô/´,´/´`4.4b4/t,4.´.ô.4-t/t`´,4'ô`4-t/ô/´`4b´aô,4.H4/t,4.Kt/ô/´-4at/´-4côbt.4`´-K4&´.ô.4-t/t`´`t.´/4-ô,4/ô.4`´,´,4/t-NÛY\ÜØYÙ_H4'tcô/4,4-4.4`4-t.´`´/t/4`tb´,´/ô,4-4,4bt.4/ô`4/´-4`ô.´`´.4,4.´,4`´,4.ô/´,ô,4-ô,4`´,4-ô.4-ô,4cô,´.´,4'´`´,ô/´,´/´`4.4/t,4.Kt-4/´,t`4-H4.´,4.´`´/4/4/´-´-tb4.4/ô`4-t-4.ô/´-´.4,4.ô`´-t`4/t,4`´.4,´.4,4.´/4-H4`ô/4-t`t`´/t/XÂËÈYÈÛÛ\Ø][Û\ÝÜBÙ\ÜÚ[ÛY\ÜØYÙ\Ë\Ú
-ÈÛN	Ý\Ù\ËÛÛ[[[ÙYY\ÜØYÙHJNÂËÈÙY\ÛH\ÝLY\ÜØYÙ\ÈÜÛÛ^Y
-Ù\ÜÚ[ÛY\ÜØYÙ\Ë[Ý
-HÂÙ\ÜÚ[ÛY\ÜØYÙ\ÈHÙ\ÜÚ[ÛY\ÜØYÙ\ËÛXÙJL
-NÂBÛÛÝ\HH]ØZ]Ø[Ù[Z[JÖTÕSWÔÓTÙ\ÜÚ[ÛY\ÜØYÙ\ÊNÂËÈÝÜH\ÜÚ\Ý[\ÜÛÙBÙ\ÜÚ[ÛY\ÜØYÙ\Ë\Ú
-ÈÛN	Ø\ÜÚ\Ý[	ËÛÛ[\HJNÂ\ËÛÛÂ\KÙ\ÜÚ[ÛYÙXÝÑÝ[ÙX\ÚÙXÝÊY\ÜØYÙKÊK[ÝJNÂHØ]Ú
-\HÂÛÛÛÛK\Ü	ÐÚ]\ÜË\Y\ÜØYÙJNÂ\ËÝ]\ÊL
-KÛÛÂ\Ü	ÐÚ]\ÜË\N	ô(tb´-´,4.ôcô,´,4/4,´b´-ô/t.4.´/t,4,ô`4-tb4.´,4'4/´.ôcË4/´/ô.4`´,4.t`´-H4/´`´/t/´,´/4.4.ô.4`t-H4`t,´b´`4-´-t`´-H4`H4/t,4`H4/t,ÎLÍÍÍÂJNÂBJNÂËÈÙXÝÙX\Ú[Ú[
-Ü\XÝÙX\ÚÚ]Ý]RJB\Ù]
-	ËØ\KÜÙXÝËÜÙX\Ú	Ë
-\K\ÊHOÂÛÛÝÈK[Z]HHHH\K]Y\NÂY
-\JH]\\ËÝ]\Ê
-KÛÛÈ\Ü	Ô]Y\H\[Y]\H\È\]Z\Y	ÈJNÂÛÛÝ\Ý[ÈHÙX\ÚÙXÝÊK\ÙR[
-[Z]
-JNÂ\ËÛÛÈ\Ý[ËÛÝ[\Ý[Ë[ÝJNÂJNÂËÈÙXÝYÜÈ[Ú[\Ù]
-	ËØ\KÜÙXÝËÝYÜÉË
-\K\ÊHOÂÛÛÝYÐÛÝ[ÈHßNÂÙXÝËÜXXÚ
-O
-YÜÈ×JKÜXXÚ
-OYÐÛÝ[ÖÝHH
-YÐÛÝ[ÖÝH
-H
-ÈJJNÂ\ËÛÛYÐÛÝ[ÊNÂJNÂËÈX[ÚXÚÂ\Ù]
-	ËØ\KÚX[	Ë
-\K\ÊHOÂ\ËÛÛÂÝ]\Î	ÛÚÉËÙXÝÎÙXÝË[ÝZN	ÙÙ[Z[KLKY\Ú	Ë\[YNØÙ\ÜË\[YJ
-BJNÂJNÂËÈÝ[[ÛHÚ]YÙB\Ù]
-	ËÉË
-\K\ÊHOÂ\ËÙ[[J]Ú[×Ù\[YK	ÜXXÉË	Ú[^[	ÊJNÂJNÂËÈÚYÙ]Â\Ù]
-	ËÝÚYÙ]ÉË
-\K\ÊHOÂ\ËÙ]XY\	ÐÛÛ[U\IË	Ø\XØ][ÛÚ]\ØÜ\	ÊNÂ\ËÙ[[J]Ú[×Ù\[YK	ÜXXÉË	ÝÚYÙ]ÉÊJNÂJNÂËÈKKHÝ\Ù\\KKBØYÙXÝÊ
-NÂ\\Ý[Ô
+    const sid = sessionId || `s_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const session = getSession(sid);
 
-HOÂÛÛÛÛKÙÊ¼'ã/È[[ÈÚ]ÝÙ\\
-Ù[Z[HRJX
-NÂÛÛÛÛKÙÊÝ[[ÛHYÙNËÛØØ[ÜÝÔÔX
-NÂÛÛÛÛKÙÊÚYÙ]ØÜ\ËÛØØ[ÜÝÔÔKÝÚYÙ]Ø
-NÂÛÛÛÛKÙÊTH[Ú[ËÛØØ[ÜÝÔÔKØ\KØÚ]
-NÂÛÛÛÛKÙÊÙXÝÈØYY	ÜÙXÝË[ÝX
-NÂÛÛÛÛKÙÊRH[Ù[Ù[Z[HH\Ú
-NÂJNÂ
+    // Update language if provided
+    if (lang && LANGUAGES[lang]) session.lang = lang;
+
+    session.messages.push({ role: 'user', content: message });
+
+    // Keep last 20 messages for context
+    if (session.messages.length > 20) {
+      session.messages = session.messages.slice(-20);
+    }
+
+    const systemPrompt = getSystemPrompt(session.lang);
+    const reply = await callGemini(session.messages, systemPrompt);
+
+    session.messages.push({ role: 'assistant', content: reply });
+
+    res.json({ reply, sessionId: sid, lang: session.lang });
+  } catch (err) {
+    console.error('Chat error:', err.message);
+    res.status(500).json({ error: 'Failed to get response. Please try again.' });
+  }
+});
+
+// Set language
+app.post('/api/lang', (req, res) => {
+  const { sessionId, lang } = req.body;
+  if (!lang || !LANGUAGES[lang]) return res.status(400).json({ error: 'Invalid language' });
+  const session = getSession(sessionId || 'default');
+  session.lang = lang;
+  res.json({ lang, greeting: LANGUAGES[lang].greeting });
+});
+
+// Get available languages
+app.get('/api/languages', (req, res) => {
+  res.json(LANGUAGES);
+});
+
+// Product search endpoint
+app.get('/api/products/search', (req, res) => {
+  const { q, limit } = req.query;
+  if (!q) return res.json([]);
+  res.json(searchProducts(q, parseInt(limit) || 10));
+});
+
+// Product tags
+app.get('/api/products/tags', (req, res) => {
+  const tagCounts = {};
+  for (const p of PRODUCTS) {
+    for (const t of p.tags) tagCounts[t] = (tagCounts[t] || 0) + 1;
+  }
+  res.json(tagCounts);
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    products: PRODUCTS.length,
+    sessions: sessions.size,
+    languages: Object.keys(LANGUAGES),
+    uptime: Math.floor(process.uptime()),
+  });
+});
+
+// ── Start Server ───────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`Bett'r Food Chatbot running on port ${PORT}`);
+  console.log(`Products loaded: ${PRODUCTS.length}`);
+  console.log(`Languages: ${Object.keys(LANGUAGES).join(', ')}`);
+});
