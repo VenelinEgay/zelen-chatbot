@@ -95,8 +95,17 @@ function autoTag(product) {
 // ── Fetch URL Helper ──────────────────────────────────────────
 function fetchUrl(url) {
   return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; BettrBot/1.0)',
+        'Accept': 'application/json, text/plain, */*',
+      }
+    };
     const mod = url.startsWith('https') ? https : require('http');
-    mod.get(url, (res) => {
+    mod.get(options, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return fetchUrl(res.headers.location).then(resolve, reject);
       }
@@ -237,7 +246,7 @@ const TAG_BOOST = {
   'gluten-free': ['gluten-free', 'gluten free', 'celiac', 'безглутен', 'bezlepkov', 'gluténmentes', 'brez glutena'],
   'protein': ['protein', 'протеин', 'fehérje', 'bílkovina', 'proteína'],
   'keto': ['keto', 'low-carb', 'low carb', 'ketó'],
-  'chocolate': ['chocolate', 'chocolat', 'шоколад', 'čokoláda', 'σοκολάτα', 'csokoládé', 'ciocolată'],
+  'chocolate': ['chocolate', 'chocolat', 'шоколад', 'čokoláda', 'σογκολάτα', 'csokoládé', 'ciocolată'],
   'nut-butter': ['nut butter', 'peanut butter', 'almond butter', 'cashew butter', 'tahini', 'масло'],
   'snack': ['snack', 'bar', 'cookie', 'wafer', 'десерт', 'снакс'],
   'superfood': ['superfood', 'spirulina', 'maca', 'ashwagandha', 'chlorella', 'moringa'],
@@ -250,7 +259,7 @@ const TAG_BOOST = {
   'immunity': ['immunity', 'immune', 'vitamin', 'имунитет', 'imunita', 'immunitás'],
   'energy': ['energy', 'енергия', 'energia', 'energie'],
   'cooking': ['cooking', 'baking', 'flour', 'mix', 'готвене', 'pečení', 'sütés'],
-  'raw': ['raw', 'сурово'],
+  'raw': ['ra, 'сурово'],
   'bio': ['bio', 'organic', 'био', 'organický', 'βιολογικό'],
   'gift': ['gift', 'bundle', 'box', 'подарък', 'dárek', 'ajándék', 'cadou'],
 };
