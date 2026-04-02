@@ -10,7 +10,6 @@ const cors = require('cors');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -259,7 +258,7 @@ const TAG_BOOST = {
   'immunity': ['immunity', 'immune', 'vitamin', 'имунитет', 'imunita', 'immunitás'],
   'energy': ['energy', 'енергия', 'energia', 'energie'],
   'cooking': ['cooking', 'baking', 'flour', 'mix', 'готвене', 'pečení', 'sütés'],
-  'raw': ['ra, 'сурово'],
+  'raw': ['raw', 'сурово'],
   'bio': ['bio', 'organic', 'био', 'organický', 'βιολογικό'],
   'gift': ['gift', 'bundle', 'box', 'подарък', 'dárek', 'ajándék', 'cadou'],
 };
