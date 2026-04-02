@@ -136,7 +136,8 @@ async function fetchShopifyProducts() {
       const availableVariants = variants.filter(v => v.available);
       const priceSource = availableVariants.length > 0 ? availableVariants : variants;
       const priceEUR = Math.min(...priceSource.map(v => v.price));
-      const shopifyTags = (p.tags || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+      const rawTags = Array.isArray(p.tags) ? p.tags : (p.tags || '').split(',');
+            const shopifyTags = rawTags.map(t => String(t).trim().toLowerCase()).filter(Boolean);
       const description = (p.body_html || '').replace(/<[^>]*>/g, '').substring(0, 500);
       const product = {
         name: p.title,
